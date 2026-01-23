@@ -33,7 +33,7 @@ namespace esphome {
 namespace bme690 {
 
 static const char *const TAG = "bme690";
-#define BSEC_CHECK_INPUT(x, shift) ((x) & (1U << ((shift)-1)))
+#define BSEC_CHECK_INPUT(x, shift) ((x) & (1U << ((shift) -1)))
 static const char *const IAQ_ACCURACY_STATES[4] = {"Stabilizing", "Uncertain", "Calibrating", "Calibrated"};
 
 class BME690Component : public PollingComponent, public i2c::I2CDevice {
@@ -93,9 +93,9 @@ class BME690Component : public PollingComponent, public i2c::I2CDevice {
   bool load_bsec_state();
   void save_bsec_state();
 
-  struct bme69x_dev dev_{};
-  struct bme69x_conf conf_{};
-  struct bme69x_heatr_conf heatr_conf_{};
+  struct bme69x_dev dev_ {};
+  struct bme69x_conf conf_ {};
+  struct bme69x_heatr_conf heatr_conf_ {};
   std::vector<uint8_t> bsec_instance_;
   std::vector<uint8_t> bsec_work_buffer_;
   float sample_rate_{BSEC_SAMPLE_RATE_ULP};
@@ -194,8 +194,8 @@ inline void BME690Component::setup() {
   }
 
   this->heatr_conf_.enable = BME69X_ENABLE;
-  this->heatr_conf_.heatr_temp = 320;   // degC
-  this->heatr_conf_.heatr_dur = 150;    // ms
+  this->heatr_conf_.heatr_temp = 320;  // degC
+  this->heatr_conf_.heatr_dur = 150;   // ms
   this->heatr_conf_.heatr_temp_prof = nullptr;
   this->heatr_conf_.heatr_dur_prof = nullptr;
   this->heatr_conf_.profile_len = 0;
@@ -209,7 +209,6 @@ inline void BME690Component::setup() {
   if (!this->configure_bsec()) {
     ESP_LOGW(TAG, "BSEC configuration failed; running raw sensor only.");
   }
-
 }
 
 inline void BME690Component::dump_config() {
@@ -264,8 +263,8 @@ inline void BME690Component::update() {
     sensor_settings.heater_temperature = this->heatr_conf_.heatr_temp;
     sensor_settings.heater_duration = this->heatr_conf_.heatr_dur;
     sensor_settings.run_gas = 1;
-    sensor_settings.process_data = BSEC_PROCESS_TEMPERATURE | BSEC_PROCESS_HUMIDITY |
-                                   BSEC_PROCESS_PRESSURE | BSEC_PROCESS_GAS;
+    sensor_settings.process_data =
+        BSEC_PROCESS_TEMPERATURE | BSEC_PROCESS_HUMIDITY | BSEC_PROCESS_PRESSURE | BSEC_PROCESS_GAS;
   }
 
   if (sensor_settings.trigger_measurement == 0) {
@@ -372,7 +371,8 @@ inline bool BME690Component::configure_bsec() {
     return false;
   }
 
-  this->pref_ = global_preferences->make_preference<std::array<uint8_t, BSEC_MAX_STATE_BLOB_SIZE + 4>>(fnv1_hash("bsec_state"));
+  this->pref_ =
+      global_preferences->make_preference<std::array<uint8_t, BSEC_MAX_STATE_BLOB_SIZE + 4>>(fnv1_hash("bsec_state"));
   this->load_bsec_state();
 
   bsec_sensor_configuration_t requested_virtual_sensors[14] = {};
@@ -415,8 +415,7 @@ inline bool BME690Component::configure_bsec() {
   return true;
 }
 
-inline bool BME690Component::push_inputs_to_bsec(const struct bme69x_data &data,
-                                                 const bsec_bme_settings_t &settings,
+inline bool BME690Component::push_inputs_to_bsec(const struct bme69x_data &data, const bsec_bme_settings_t &settings,
                                                  int64_t timestamp_ns) {
   bsec_input_t inputs[BSEC_MAX_PHYSICAL_SENSOR] = {};
   uint8_t n_inputs = 0;
@@ -432,12 +431,10 @@ inline bool BME690Component::push_inputs_to_bsec(const struct bme69x_data &data,
   if (BSEC_CHECK_INPUT(settings.process_data, BSEC_INPUT_PRESSURE)) {
     inputs[n_inputs++] = {timestamp_ns, data.pressure, 1, BSEC_INPUT_PRESSURE};
   }
-  if (BSEC_CHECK_INPUT(settings.process_data, BSEC_INPUT_GASRESISTOR) &&
-      (data.status & BME69X_GASM_VALID_MSK)) {
+  if (BSEC_CHECK_INPUT(settings.process_data, BSEC_INPUT_GASRESISTOR) && (data.status & BME69X_GASM_VALID_MSK)) {
     inputs[n_inputs++] = {timestamp_ns, data.gas_resistance, 1, BSEC_INPUT_GASRESISTOR};
   }
-  if (BSEC_CHECK_INPUT(settings.process_data, BSEC_INPUT_PROFILE_PART) &&
-      (data.status & BME69X_GASM_VALID_MSK)) {
+  if (BSEC_CHECK_INPUT(settings.process_data, BSEC_INPUT_PROFILE_PART) && (data.status & BME69X_GASM_VALID_MSK)) {
     const float profile_part = (settings.op_mode == BME69X_FORCED_MODE) ? 0.0f : static_cast<float>(data.gas_index);
     inputs[n_inputs++] = {timestamp_ns, profile_part, 1, BSEC_INPUT_PROFILE_PART};
   }
