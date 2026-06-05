@@ -25,9 +25,6 @@ extern "C" {
 #ifdef USE_TEXT_SENSOR
 #include "esphome/components/text_sensor/text_sensor.h"
 #endif
-#ifdef USE_TEXT_SENSOR
-#include "esphome/components/text_sensor/text_sensor.h"
-#endif
 
 namespace esphome {
 namespace bme690 {
@@ -119,7 +116,10 @@ inline bool BME690Component::check_result(const char *label, int8_t rslt) {
 }
 
 inline bool BME690Component::check_bsec_status(const char *label, bsec_library_return_t rslt) {
-  if (rslt == BSEC_OK) {
+  if (rslt >= BSEC_OK) {
+    if (rslt > BSEC_OK) {
+      ESP_LOGD(TAG, "%s warning: %d", label, static_cast<int>(rslt));
+    }
     return true;
   }
 
@@ -248,6 +248,7 @@ inline void BME690Component::update() {
     auto bsec_rslt = bsec_sensor_control(this->bsec_instance_.data(), timestamp_ns, &sensor_settings);
     if (!this->check_bsec_status("bsec_sensor_control", bsec_rslt)) {
       this->status_set_warning();
+      return;
     }
     ESP_LOGI(TAG, "BSEC control: next_call=%lld, trig=%u, op_mode=%u, temp_os=%u hum_os=%u pres_os=%u run_gas=%u",
              static_cast<long long>(sensor_settings.next_call), sensor_settings.trigger_measurement,
@@ -375,31 +376,48 @@ inline bool BME690Component::configure_bsec() {
       global_preferences->make_preference<std::array<uint8_t, BSEC_MAX_STATE_BLOB_SIZE + 4>>(fnv1_hash("bsec_state"));
   this->load_bsec_state();
 
-  bsec_sensor_configuration_t requested_virtual_sensors[14] = {};
+  bsec_sensor_configuration_t requested_virtual_sensors[BSEC_NUMBER_OUTPUTS] = {};
   uint8_t n_requested = 0;
 
-  auto add_request = [&](uint8_t sensor_id) {
+  auto add_request = [&](uint8_t sensor_id, float sample_rate) {
     requested_virtual_sensors[n_requested].sensor_id = sensor_id;
-    requested_virtual_sensors[n_requested].sample_rate = this->sample_rate_;
+    requested_virtual_sensors[n_requested].sample_rate = sample_rate;
     n_requested++;
   };
 
-  // Always request the raw feeds.
-  add_request(BSEC_OUTPUT_RAW_PRESSURE);
-  add_request(BSEC_OUTPUT_RAW_TEMPERATURE);
-  add_request(BSEC_OUTPUT_RAW_HUMIDITY);
-  add_request(BSEC_OUTPUT_RAW_GAS);
+  const float iaq_sample_rate = this->sample_rate_;
+  const float env_sample_rate = BSEC_SAMPLE_RATE_LP;
 
-  // IAQ-related outputs.
-  add_request(BSEC_OUTPUT_IAQ);
-  add_request(BSEC_OUTPUT_STATIC_IAQ);
-  add_request(BSEC_OUTPUT_SENSOR_HEAT_COMPENSATED_TEMPERATURE);
-  add_request(BSEC_OUTPUT_SENSOR_HEAT_COMPENSATED_HUMIDITY);
-  add_request(BSEC_OUTPUT_CO2_EQUIVALENT);
-  add_request(BSEC_OUTPUT_BREATH_VOC_EQUIVALENT);
-  add_request(BSEC_OUTPUT_GAS_PERCENTAGE);
-  add_request(BSEC_OUTPUT_STABILIZATION_STATUS);
-  add_request(BSEC_OUTPUT_RUN_IN_STATUS);
+  if (this->iaq_sensor != nullptr || this->iaq_accuracy_sensor != nullptr
+#ifdef USE_TEXT_SENSOR
+      || this->iaq_accuracy_text_sensor_ != nullptr
+#endif
+  ) {
+    add_request(BSEC_OUTPUT_IAQ, iaq_sample_rate);
+  }
+  if (this->static_iaq_sensor != nullptr) {
+    add_request(BSEC_OUTPUT_STATIC_IAQ, iaq_sample_rate);
+  }
+  if (this->co2_equivalent_sensor != nullptr) {
+    add_request(BSEC_OUTPUT_CO2_EQUIVALENT, iaq_sample_rate);
+  }
+  if (this->breath_voc_equivalent_sensor != nullptr) {
+    add_request(BSEC_OUTPUT_BREATH_VOC_EQUIVALENT, iaq_sample_rate);
+  }
+  if (this->gas_percentage_sensor != nullptr) {
+    add_request(BSEC_OUTPUT_GAS_PERCENTAGE, iaq_sample_rate);
+  }
+  if (this->comp_temperature_sensor != nullptr) {
+    add_request(BSEC_OUTPUT_SENSOR_HEAT_COMPENSATED_TEMPERATURE, env_sample_rate);
+  }
+  if (this->comp_humidity_sensor != nullptr) {
+    add_request(BSEC_OUTPUT_SENSOR_HEAT_COMPENSATED_HUMIDITY, env_sample_rate);
+  }
+
+  if (n_requested == 0) {
+    ESP_LOGW(TAG, "No BSEC virtual sensors configured");
+    return false;
+  }
 
   bsec_sensor_configuration_t required_sensor_settings[BSEC_MAX_PHYSICAL_SENSOR] = {};
   uint8_t n_required = BSEC_MAX_PHYSICAL_SENSOR;
@@ -420,23 +438,48 @@ inline bool BME690Component::push_inputs_to_bsec(const struct bme69x_data &data,
   bsec_input_t inputs[BSEC_MAX_PHYSICAL_SENSOR] = {};
   uint8_t n_inputs = 0;
 
-  inputs[n_inputs++] = {timestamp_ns, this->ext_temp_offset_, 1, BSEC_INPUT_HEATSOURCE};
-
   if (BSEC_CHECK_INPUT(settings.process_data, BSEC_INPUT_TEMPERATURE)) {
-    inputs[n_inputs++] = {timestamp_ns, data.temperature, 1, BSEC_INPUT_TEMPERATURE};
+    inputs[n_inputs].time_stamp = timestamp_ns;
+    inputs[n_inputs].signal = data.temperature;
+    inputs[n_inputs].signal_dimensions = 1;
+    inputs[n_inputs].sensor_id = BSEC_INPUT_TEMPERATURE;
+    n_inputs++;
+  }
+  if (BSEC_CHECK_INPUT(settings.process_data, BSEC_INPUT_HEATSOURCE)) {
+    inputs[n_inputs].time_stamp = timestamp_ns;
+    inputs[n_inputs].signal = this->ext_temp_offset_;
+    inputs[n_inputs].signal_dimensions = 1;
+    inputs[n_inputs].sensor_id = BSEC_INPUT_HEATSOURCE;
+    n_inputs++;
   }
   if (BSEC_CHECK_INPUT(settings.process_data, BSEC_INPUT_HUMIDITY)) {
-    inputs[n_inputs++] = {timestamp_ns, data.humidity, 1, BSEC_INPUT_HUMIDITY};
+    inputs[n_inputs].time_stamp = timestamp_ns;
+    inputs[n_inputs].signal = data.humidity;
+    inputs[n_inputs].signal_dimensions = 1;
+    inputs[n_inputs].sensor_id = BSEC_INPUT_HUMIDITY;
+    n_inputs++;
   }
   if (BSEC_CHECK_INPUT(settings.process_data, BSEC_INPUT_PRESSURE)) {
-    inputs[n_inputs++] = {timestamp_ns, data.pressure, 1, BSEC_INPUT_PRESSURE};
+    inputs[n_inputs].time_stamp = timestamp_ns;
+    inputs[n_inputs].signal = data.pressure;
+    inputs[n_inputs].signal_dimensions = 1;
+    inputs[n_inputs].sensor_id = BSEC_INPUT_PRESSURE;
+    n_inputs++;
   }
   if (BSEC_CHECK_INPUT(settings.process_data, BSEC_INPUT_GASRESISTOR) && (data.status & BME69X_GASM_VALID_MSK)) {
-    inputs[n_inputs++] = {timestamp_ns, data.gas_resistance, 1, BSEC_INPUT_GASRESISTOR};
+    inputs[n_inputs].time_stamp = timestamp_ns;
+    inputs[n_inputs].signal = data.gas_resistance;
+    inputs[n_inputs].signal_dimensions = 1;
+    inputs[n_inputs].sensor_id = BSEC_INPUT_GASRESISTOR;
+    n_inputs++;
   }
   if (BSEC_CHECK_INPUT(settings.process_data, BSEC_INPUT_PROFILE_PART) && (data.status & BME69X_GASM_VALID_MSK)) {
     const float profile_part = (settings.op_mode == BME69X_FORCED_MODE) ? 0.0f : static_cast<float>(data.gas_index);
-    inputs[n_inputs++] = {timestamp_ns, profile_part, 1, BSEC_INPUT_PROFILE_PART};
+    inputs[n_inputs].time_stamp = timestamp_ns;
+    inputs[n_inputs].signal = profile_part;
+    inputs[n_inputs].signal_dimensions = 1;
+    inputs[n_inputs].sensor_id = BSEC_INPUT_PROFILE_PART;
+    n_inputs++;
   }
 
   if (n_inputs == 0) {
@@ -451,7 +494,11 @@ inline bool BME690Component::push_inputs_to_bsec(const struct bme69x_data &data,
     return false;
   }
 
-  ESP_LOGI(TAG, "BSEC outputs: %u", num_outputs);
+  ESP_LOGD(TAG, "BSEC outputs: %u", num_outputs);
+  for (uint8_t idx = 0; idx < num_outputs; idx++) {
+    ESP_LOGV(TAG, "  output[%u]: id=%u signal=%.3f accuracy=%u", idx, outputs[idx].sensor_id, outputs[idx].signal,
+             outputs[idx].accuracy);
+  }
   this->handle_bsec_outputs(outputs, num_outputs);
   this->save_bsec_state();
   return true;
