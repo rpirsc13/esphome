@@ -69,7 +69,9 @@ CONFIG_SCHEMA = cv.All(
     ),
     cv.All(
         cv.only_on_esp32,
-        esp32.only_on_variant(supported=[esp32.VARIANT_ESP32C6]),
+        esp32.only_on_variant(
+            supported=[esp32.VARIANT_ESP32C6, esp32.VARIANT_ESP32S3]
+        ),
     ),
 )
 
