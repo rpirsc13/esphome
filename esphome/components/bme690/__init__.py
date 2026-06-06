@@ -10,7 +10,6 @@ from esphome.components import esp32, i2c
 import esphome.config_validation as cv
 from esphome.const import (
     CONF_ID,
-    CONF_RAW_DATA_ID,
     CONF_SAMPLE_RATE,
     CONF_TEMPERATURE_OFFSET,
     Framework,
@@ -28,6 +27,7 @@ DOMAIN = "bme690"
 CONF_BME690_ID = "bme690_id"
 CONF_BSEC_LIBRARY = "bsec_library"
 CONF_BSEC_CONFIG = "bsec_config"
+CONF_BSEC_CONFIG_DATA_ID = "bsec_config_data_id"
 CONF_STATE_SAVE_INTERVAL = "state_save_interval"
 CONF_SUPPLY_VOLTAGE = "supply_voltage"
 
@@ -89,13 +89,39 @@ def _resolve_bsec_config(value: Path | str) -> Path:
     return path
 
 
+def _parse_comma_separated_bytes(text: str) -> list[int]:
+    values = []
+    for part in text.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        value = int(part)
+        if not 0 <= value <= 255:
+            msg = f"BSEC config byte value {value} is out of range 0-255"
+            raise ValueError(msg)
+        values.append(value)
+    return values
+
+
 def _load_bsec_config_bytes(path: Path) -> list[int]:
     raw = path.read_bytes()
-    text = raw.decode("utf-8", errors="ignore")
+    text = raw.decode("utf-8-sig", errors="ignore").strip()
+
+    # C source from Bosch SDK: const uint8_t bsec_config_iaq[N] = { ... };
+    brace_start = text.find("{")
+    brace_end = text.rfind("}")
+    if brace_start != -1 and brace_end > brace_start:
+        return _parse_comma_separated_bytes(text[brace_start + 1 : brace_end])
+
+    # Comma-separated .txt blob (BSEC2-style export)
     if "," in text:
-        return [int(x.strip()) for x in text.split(",") if x.strip()]
-    if re.search(r"[{};]", text):
-        return [int(x) for x in re.findall(r"\b\d+\b", text)]
+        return _parse_comma_separated_bytes(text)
+
+    # Whitespace-separated decimal bytes
+    if re.fullmatch(r"[\d\s]+", text):
+        return [int(x) for x in text.split()]
+
+    # Raw binary blob
     return list(raw)
 
 
@@ -121,7 +147,7 @@ CONFIG_SCHEMA = cv.All(
             cv.GenerateID(): cv.declare_id(BME690Component),
             cv.Required(CONF_BSEC_LIBRARY): cv.Any(cv.file_, cv.url),
             cv.Optional(CONF_BSEC_CONFIG): cv.Any(cv.file_, cv.url),
-            cv.GenerateID(CONF_RAW_DATA_ID): cv.declare_id(cg.uint8),
+            cv.GenerateID(CONF_BSEC_CONFIG_DATA_ID): cv.declare_id(cg.uint8),
             cv.Optional(CONF_TEMPERATURE_OFFSET, default=0): cv.temperature_delta,
             cv.Optional(CONF_SAMPLE_RATE, default="ULP"): cv.enum(
                 SAMPLE_RATE_OPTIONS, upper=True
@@ -182,7 +208,10 @@ async def to_code(config):
             ) from err
         if not config_bytes:
             raise EsphomeError(f"BSEC config file '{config_path}' is empty")
-        config_arr = cg.progmem_array(config[CONF_RAW_DATA_ID], config_bytes)
+        config_arr = cg.static_const_array(
+            config[CONF_BSEC_CONFIG_DATA_ID],
+            cg.ArrayInitializer(*config_bytes, multiline=True),
+        )
         cg.add(var.set_bsec_configuration(config_arr, len(config_bytes)))
     else:
         cg.add(
