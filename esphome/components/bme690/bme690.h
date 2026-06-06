@@ -370,18 +370,22 @@ inline void BME690Component::update() {
     return;
   }
 
-  if (this->temperature_sensor != nullptr) {
-    this->temperature_sensor->publish_state(data.temperature);
-  }
-  if (this->pressure_sensor != nullptr) {
-    // Driver returns pressure in Pa; convert to hPa to match common ESPHome convention.
-    this->pressure_sensor->publish_state(data.pressure / 100.0f);
-  }
-  if (this->humidity_sensor != nullptr) {
-    this->humidity_sensor->publish_state(data.humidity);
-  }
-  if (this->gas_resistance_sensor != nullptr) {
-    this->gas_resistance_sensor->publish_state(data.gas_resistance);
+  // Raw driver values are taken while/after the gas heater runs and are not ambient readings.
+  // When BSEC is active, publish environmental values from BSEC outputs instead.
+  if (!this->bsec_ready_) {
+    if (this->temperature_sensor != nullptr) {
+      this->temperature_sensor->publish_state(data.temperature);
+    }
+    if (this->pressure_sensor != nullptr) {
+      // Driver returns pressure in Pa; convert to hPa to match common ESPHome convention.
+      this->pressure_sensor->publish_state(data.pressure / 100.0f);
+    }
+    if (this->humidity_sensor != nullptr) {
+      this->humidity_sensor->publish_state(data.humidity);
+    }
+    if (this->gas_resistance_sensor != nullptr) {
+      this->gas_resistance_sensor->publish_state(data.gas_resistance);
+    }
   }
 
   if (this->bsec_ready_) {
@@ -443,11 +447,17 @@ inline bool BME690Component::configure_bsec() {
   if (this->gas_percentage_sensor != nullptr) {
     add_request(BSEC_OUTPUT_GAS_PERCENTAGE, iaq_sample_rate);
   }
-  if (this->comp_temperature_sensor != nullptr) {
+  if (this->temperature_sensor != nullptr || this->comp_temperature_sensor != nullptr) {
     add_request(BSEC_OUTPUT_SENSOR_HEAT_COMPENSATED_TEMPERATURE, env_sample_rate);
   }
-  if (this->comp_humidity_sensor != nullptr) {
+  if (this->humidity_sensor != nullptr || this->comp_humidity_sensor != nullptr) {
     add_request(BSEC_OUTPUT_SENSOR_HEAT_COMPENSATED_HUMIDITY, env_sample_rate);
+  }
+  if (this->pressure_sensor != nullptr) {
+    add_request(BSEC_OUTPUT_RAW_PRESSURE, env_sample_rate);
+  }
+  if (this->gas_resistance_sensor != nullptr) {
+    add_request(BSEC_OUTPUT_RAW_GAS, iaq_sample_rate);
   }
 
   if (n_requested == 0) {
@@ -585,10 +595,26 @@ inline void BME690Component::handle_bsec_outputs(const bsec_output_t *outputs, u
         if (this->comp_temperature_sensor != nullptr) {
           this->comp_temperature_sensor->publish_state(out.signal);
         }
+        if (this->temperature_sensor != nullptr) {
+          this->temperature_sensor->publish_state(out.signal);
+        }
         break;
       case BSEC_OUTPUT_SENSOR_HEAT_COMPENSATED_HUMIDITY:
         if (this->comp_humidity_sensor != nullptr) {
           this->comp_humidity_sensor->publish_state(out.signal);
+        }
+        if (this->humidity_sensor != nullptr) {
+          this->humidity_sensor->publish_state(out.signal);
+        }
+        break;
+      case BSEC_OUTPUT_RAW_PRESSURE:
+        if (this->pressure_sensor != nullptr) {
+          this->pressure_sensor->publish_state(out.signal / 100.0f);
+        }
+        break;
+      case BSEC_OUTPUT_RAW_GAS:
+        if (this->gas_resistance_sensor != nullptr) {
+          this->gas_resistance_sensor->publish_state(out.signal);
         }
         break;
       default:
