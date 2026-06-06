@@ -33,9 +33,27 @@ static const char *const TAG = "bme690";
 #define BSEC_CHECK_INPUT(x, shift) ((x) & (1U << ((shift) -1)))
 static const char *const IAQ_ACCURACY_STATES[4] = {"Stabilizing", "Uncertain", "Calibrating", "Calibrated"};
 
+enum SampleRate : uint8_t {
+  SAMPLE_RATE_LP = 0,
+  SAMPLE_RATE_ULP = 1,
+};
+
+enum SupplyVoltage : uint8_t {
+  SUPPLY_VOLTAGE_1V8 = 0,
+  SUPPLY_VOLTAGE_3V3 = 1,
+};
+
 class BME690Component : public PollingComponent, public i2c::I2CDevice {
  public:
   explicit BME690Component(uint32_t update_interval = 5000) : PollingComponent(update_interval) {}
+
+  void set_temperature_offset(float offset) { this->ext_temp_offset_ = offset; }
+  void set_sample_rate(SampleRate sample_rate) { this->sample_rate_ = sample_rate; }
+  void set_supply_voltage(SupplyVoltage supply_voltage) { this->supply_voltage_ = supply_voltage; }
+  void set_bsec_configuration(const uint8_t *config, size_t len) {
+    this->bsec_config_ = config;
+    this->bsec_config_len_ = len;
+  }
 
   void set_temperature_sensor(sensor::Sensor *sensor) { temperature_sensor = sensor; }
   void set_humidity_sensor(sensor::Sensor *sensor) { humidity_sensor = sensor; }
@@ -89,13 +107,20 @@ class BME690Component : public PollingComponent, public i2c::I2CDevice {
   void log_bsec_version();
   bool load_bsec_state();
   void save_bsec_state();
+  float get_iaq_sample_rate_hz_() const {
+    return this->sample_rate_ == SAMPLE_RATE_LP ? BSEC_SAMPLE_RATE_LP : BSEC_SAMPLE_RATE_ULP;
+  }
+  float get_env_sample_rate_hz_() const { return BSEC_SAMPLE_RATE_LP; }
 
   struct bme69x_dev dev_ {};
   struct bme69x_conf conf_ {};
   struct bme69x_heatr_conf heatr_conf_ {};
   std::vector<uint8_t> bsec_instance_;
   std::vector<uint8_t> bsec_work_buffer_;
-  float sample_rate_{BSEC_SAMPLE_RATE_ULP};
+  const uint8_t *bsec_config_{nullptr};
+  size_t bsec_config_len_{0};
+  SampleRate sample_rate_{SAMPLE_RATE_ULP};
+  SupplyVoltage supply_voltage_{SUPPLY_VOLTAGE_1V8};
   float ext_temp_offset_{0.0f};
   bool bsec_ready_{false};
   int64_t next_call_ns_{0};
@@ -229,7 +254,16 @@ inline void BME690Component::dump_config() {
 #ifdef USE_TEXT_SENSOR
   LOG_TEXT_SENSOR("  ", "IAQ Accuracy", this->iaq_accuracy_text_sensor_);
 #endif
-  ESP_LOGCONFIG(TAG, "  State Save Interval: %ums", this->state_save_interval_ms_);
+  ESP_LOGCONFIG(TAG,
+                "  Temperature offset: %.2f°C\n"
+                "  Sample rate: %s\n"
+                "  Supply voltage: %s\n"
+                "  BSEC config: %s\n"
+                "  State Save Interval: %ums",
+                this->ext_temp_offset_, this->sample_rate_ == SAMPLE_RATE_LP ? "LP" : "ULP",
+                this->supply_voltage_ == SUPPLY_VOLTAGE_3V3 ? "3.3V" : "1.8V",
+                this->bsec_config_ != nullptr ? "custom" : "built-in (generic_18v_300s_28d)",
+                this->state_save_interval_ms_);
   LOG_UPDATE_INTERVAL(this);
 }
 
@@ -366,7 +400,9 @@ inline bool BME690Component::configure_bsec() {
   }
   this->log_bsec_version();
 
-  bsec_rslt = bsec_set_configuration(this->bsec_instance_.data(), bsec_config_iaq, sizeof(bsec_config_iaq),
+  const uint8_t *config = this->bsec_config_ != nullptr ? this->bsec_config_ : bsec_config_iaq;
+  const size_t config_len = this->bsec_config_ != nullptr ? this->bsec_config_len_ : sizeof(bsec_config_iaq);
+  bsec_rslt = bsec_set_configuration(this->bsec_instance_.data(), config, config_len,
                                      this->bsec_work_buffer_.data(), this->bsec_work_buffer_.size());
   if (!this->check_bsec_status("bsec_set_configuration", bsec_rslt)) {
     return false;
@@ -385,8 +421,8 @@ inline bool BME690Component::configure_bsec() {
     n_requested++;
   };
 
-  const float iaq_sample_rate = this->sample_rate_;
-  const float env_sample_rate = BSEC_SAMPLE_RATE_LP;
+  const float iaq_sample_rate = this->get_iaq_sample_rate_hz_();
+  const float env_sample_rate = this->get_env_sample_rate_hz_();
 
   if (this->iaq_sensor != nullptr || this->iaq_accuracy_sensor != nullptr
 #ifdef USE_TEXT_SENSOR
@@ -429,7 +465,7 @@ inline bool BME690Component::configure_bsec() {
   }
 
   this->bsec_ready_ = true;
-  ESP_LOGI(TAG, "BSEC ready (sample rate %.3f Hz)", this->sample_rate_);
+  ESP_LOGI(TAG, "BSEC ready (IAQ sample rate %.3f Hz)", iaq_sample_rate);
   return true;
 }
 
