@@ -89,23 +89,70 @@ def _resolve_bsec_config(value: Path | str) -> Path:
     return path
 
 
+def _strip_config_preamble(text: str) -> str:
+    lines = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("#") or stripped.startswith("//"):
+            continue
+        lines.append(stripped)
+    if not lines:
+        return ""
+
+    # Some exports prefix the blob with a standalone array length (e.g. "550").
+    first = lines[0]
+    if re.fullmatch(r"\d+", first) and int(first) > 255:
+        _LOGGER.warning(
+            "Skipping leading BSEC config length marker '%s' (not a byte value)",
+            first,
+        )
+        lines = lines[1:]
+
+    return "\n".join(lines)
+
+
 def _parse_comma_separated_bytes(text: str) -> list[int]:
     values = []
+    first_token = True
     for part in text.split(","):
         part = part.strip()
         if not part:
             continue
-        value = int(part)
+        try:
+            value = int(part, 0)
+        except ValueError as err:
+            msg = f"invalid BSEC config byte '{part}'"
+            raise ValueError(msg) from err
+
+        if first_token and value > 255:
+            _LOGGER.warning(
+                "Skipping leading BSEC config length marker '%s' (not a byte value)",
+                value,
+            )
+            first_token = False
+            continue
+
+        first_token = False
         if not 0 <= value <= 255:
-            msg = f"BSEC config byte value {value} is out of range 0-255"
+            msg = (
+                f"BSEC config byte value {value} is out of range 0-255. "
+                "If this is the array length from a Bosch .c file, remove it and keep "
+                "only the comma-separated byte values."
+            )
             raise ValueError(msg)
         values.append(value)
+
+    if not values:
+        raise ValueError("BSEC config contains no byte values")
+
     return values
 
 
 def _load_bsec_config_bytes(path: Path) -> list[int]:
     raw = path.read_bytes()
-    text = raw.decode("utf-8-sig", errors="ignore").strip()
+    text = _strip_config_preamble(raw.decode("utf-8-sig", errors="ignore").strip())
 
     # C source from Bosch SDK: const uint8_t bsec_config_iaq[N] = { ... };
     brace_start = text.find("{")
@@ -113,13 +160,13 @@ def _load_bsec_config_bytes(path: Path) -> list[int]:
     if brace_start != -1 and brace_end > brace_start:
         return _parse_comma_separated_bytes(text[brace_start + 1 : brace_end])
 
-    # Comma-separated .txt blob (BSEC2-style export)
+    # Comma-separated .txt/.csv blob (BSEC2-style export)
     if "," in text:
         return _parse_comma_separated_bytes(text)
 
     # Whitespace-separated decimal bytes
     if re.fullmatch(r"[\d\s]+", text):
-        return [int(x) for x in text.split()]
+        return _parse_comma_separated_bytes(text.replace("\n", ","))
 
     # Raw binary blob
     return list(raw)
