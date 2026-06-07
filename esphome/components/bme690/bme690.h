@@ -148,7 +148,7 @@ inline bool BME690Component::check_bsec_status(const char *label, bsec_library_r
     return true;
   }
 
-  ESP_LOGW(TAG, "%s failed: %d", label, static_cast<int>(rslt));
+  ESP_LOGE(TAG, "%s failed: %d", label, static_cast<int>(rslt));
   return false;
 }
 
@@ -232,7 +232,7 @@ inline void BME690Component::setup() {
   }
 
   if (!this->configure_bsec()) {
-    ESP_LOGW(TAG, "BSEC configuration failed; running raw sensor only.");
+    ESP_LOGE(TAG, "BSEC configuration failed; running raw sensor only (expect heater-inflated temperature).");
   }
 }
 
@@ -258,11 +258,14 @@ inline void BME690Component::dump_config() {
                 "  Temperature offset: %.2f°C\n"
                 "  Sample rate: %s\n"
                 "  Supply voltage: %s\n"
-                "  BSEC config: %s\n"
+                "  BSEC config: %s (%u bytes)\n"
+                "  BSEC status: %s\n"
                 "  State Save Interval: %ums",
                 this->ext_temp_offset_, this->sample_rate_ == SAMPLE_RATE_LP ? "LP" : "ULP",
                 this->supply_voltage_ == SUPPLY_VOLTAGE_3V3 ? "3.3V" : "1.8V",
                 this->bsec_config_ != nullptr ? "custom" : "built-in (generic_18v_300s_28d)",
+                static_cast<unsigned>(this->bsec_config_ != nullptr ? this->bsec_config_len_ : sizeof(bsec_config_iaq)),
+                this->bsec_ready_ ? "active" : "inactive (raw readings only)",
                 this->state_save_interval_ms_);
   LOG_UPDATE_INTERVAL(this);
 }
@@ -406,6 +409,8 @@ inline bool BME690Component::configure_bsec() {
 
   const uint8_t *config = this->bsec_config_ != nullptr ? this->bsec_config_ : bsec_config_iaq;
   const size_t config_len = this->bsec_config_ != nullptr ? this->bsec_config_len_ : sizeof(bsec_config_iaq);
+  ESP_LOGI(TAG, "Applying BSEC configuration (%u bytes, %s)", static_cast<unsigned>(config_len),
+           this->bsec_config_ != nullptr ? "custom" : "built-in");
   bsec_rslt = bsec_set_configuration(this->bsec_instance_.data(), config, config_len,
                                      this->bsec_work_buffer_.data(), this->bsec_work_buffer_.size());
   if (!this->check_bsec_status("bsec_set_configuration", bsec_rslt)) {
@@ -461,7 +466,7 @@ inline bool BME690Component::configure_bsec() {
   }
 
   if (n_requested == 0) {
-    ESP_LOGW(TAG, "No BSEC virtual sensors configured");
+    ESP_LOGE(TAG, "No BSEC virtual sensors configured");
     return false;
   }
 

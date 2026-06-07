@@ -145,6 +145,29 @@ def clone_or_update(
         # On first clone, FETCH_HEAD does not exists
         if not file_timestamp.exists():
             file_timestamp = Path(repo_dir / ".git" / "HEAD")
+        if not file_timestamp.exists():
+            if not _recover_broken:
+                raise GitRepositoryError(
+                    f"Repository at {repo_dir} is in an invalid state (missing .git metadata)"
+                )
+            _LOGGER.warning(
+                "Repository %s is missing .git metadata, attempting recovery", key
+            )
+            _LOGGER.info("Removing broken repository at %s", repo_dir)
+            shutil.rmtree(repo_dir)
+            result = clone_or_update(
+                url=url,
+                ref=ref,
+                refresh=refresh,
+                domain=domain,
+                username=username,
+                password=password,
+                submodules=submodules,
+                _recover_broken=False,
+            )
+            _LOGGER.info("Repository %s successfully recovered", key)
+            return result
+
         age = datetime.now() - datetime.fromtimestamp(file_timestamp.stat().st_mtime)
         if refresh is None or age.total_seconds() > refresh.total_seconds:
             # Try to update the repository, recovering from broken state if needed

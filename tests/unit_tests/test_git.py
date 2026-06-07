@@ -360,6 +360,38 @@ def test_clone_or_update_clones_missing_repo(
     assert len(clone_calls) > 0
 
 
+def test_clone_or_update_recovers_from_missing_git_metadata(
+    tmp_path: Path, mock_run_git_command: Mock
+) -> None:
+    """Test that repos missing .git metadata are re-cloned instead of crashing."""
+    CORE.config_path = tmp_path / "test.yaml"
+
+    url = "https://github.com/test/repo"
+    ref = "main"
+    domain = "test"
+    repo_dir = _compute_repo_dir(url, ref, domain)
+
+    # Corrupt cache: directory exists but .git metadata is missing
+    repo_dir.mkdir(parents=True)
+
+    refresh = TimePeriodSeconds(days=1)
+    result_dir, revert = git.clone_or_update(
+        url=url,
+        ref=ref,
+        refresh=refresh,
+        domain=domain,
+    )
+
+    clone_calls = [
+        call
+        for call in mock_run_git_command.call_args_list
+        if len(call[0]) > 0 and "clone" in call[0][0]
+    ]
+    assert len(clone_calls) > 0
+    assert result_dir == repo_dir
+    assert revert is None
+
+
 def test_clone_or_update_with_none_refresh_always_updates(
     tmp_path: Path, mock_run_git_command: Mock
 ) -> None:
